@@ -4,7 +4,7 @@ import numpy as np
 import re
 import logging
 
-from LRScheduler import MannualScheduler
+from lr_scheduler import MannualScheduler
 
 class AccuracyFilter(logging.Filter):
   def __init__(self, solver):
@@ -13,7 +13,7 @@ class AccuracyFilter(logging.Filter):
 
   def _allocate_memory(self):
     from mxnet import cpu
-    from mxnet.nd import zeros
+    from mxnet.ndarray import zeros
     parameters = self._solver._model.arg_params
     self._parameters = {key : zeros(value.shape, cpu()) for key, value in parameters.items()}
     states = self._solver._model.aux_params
@@ -42,9 +42,10 @@ class AccuracyFilter(logging.Filter):
         self._solver._progress['validation_loss'].append(result)
         print 'epoch %d validation loss: %f' % (epoch, result)
       elif 'accuracy' in message:
-        self._solver._progress['validation_accuracy'].append(result)
+        table = self._solver._progress['validation_accuracy']
+        table.append(result)
         print 'epoch %d validation accuracy: %f' % (epoch, result)
-        if result > max(validation_accuracy[:-1]):
+        if result > max(table[:-1]):
           self._store()
           print 'epoch %d parameters stored' % epoch
       else: raise Exception('unrecognized message: %s' % message)
@@ -52,7 +53,14 @@ class AccuracyFilter(logging.Filter):
     else: return True
 
 class BlockFilter(logging.Filter):
-  _excerpts = 'Auto-select kvstore type', 'Resetting Data Iterator', 'Start training with'
+  # TODO 'Running performance tests'
+  _excerpts = \
+    'Auto-select kvstore type', \
+    '[Deprecation Warning]', \
+    'Resetting Data Iterator', \
+    'Running performance tests', \
+    'Start training with'
+
   def filter(self, record):
     message = record.getMessage()
     return all(excerpt not in message for excerpt in BlockFilter._excerpts)
@@ -77,16 +85,6 @@ class TimeFilter(logging.Filter):
       print 'epoch %d time: %f seconds' % (epoch, time)
       return False
     else: return True
-
-class EpochCallback:
-  def __init__(self, solver):
-    self._solver = _solver
-
-  def __call__(self, epoch, *args):
-
-    # TODO structuralize
-    for function in self._solver._epoch_functions:
-      function(epoch, *args)
 
 class MXSolver():
 # TODO monitor
@@ -130,6 +128,10 @@ class MXSolver():
       wd            = optimizer_settings.get('weight_decay', 0),
     )
 
+    logging.basicConfig(level=logging.NOTSET)
+    logger = logging.getLogger()
+    logger.addFilter(BlockFilter())
+
     self._model = mx.model.FeedForward(
       ctx         = self._devices,
       initializer = initializer,
@@ -147,6 +149,8 @@ class MXSolver():
     print 'epoch %d training accuracy %f' % (epoch, results['accuracy'])
 
   def _load_settings(self):
+    if self._file is None:
+      return {}
     with open(self._file, 'r') as source:
       settings = source.read()
     settings = settings.split('\n')
@@ -158,7 +162,8 @@ class MXSolver():
     
   def _update_settings(self, *args):
     settings = self._load_settings()
-    if isinstance(self.solver._lr_scheduler, MannualScheduler):
+    if isinstance(self._lr_scheduler, MannualScheduler):
+      pass
       # TODO
 
       '''
@@ -170,6 +175,7 @@ class MXSolver():
             print 'epoch {:<3} learning rate {}'.format(epoch, lr)
       '''
 
+  # TODO data as an argument of train
   def train(self):
     self._progress = {
       'epoch'               : 0,
@@ -179,30 +185,28 @@ class MXSolver():
       'validation_accuracy' : [0]
     }
 
-    logging.basicConfig(level=logging.NOTSET)
     logger = logging.getLogger()
     accuracy_filter = AccuracyFilter(self)
     logger.addFilter(accuracy_filter)
-    logger.addFilter(BlockFilter())
     logger.addFilter(LearningRateFilter())
     logger.addFilter(TimeFilter(self))
 
-    from mx.metric import Accuracy, CompositeEvalMetric, CrossEntropy
+    from mxnet.metric import Accuracy, CompositeEvalMetric, CrossEntropy
     self._metrics = CompositeEvalMetric(metrics=[Accuracy(), CrossEntropy()])
 
     training_X, training_Y, validation_X, validation_Y, test_X, test_Y = self._data
 
-    self.model.fit(
+    self._model.fit(
       X                  = training_X,
       y                  = training_Y,
       eval_data          = (validation_X, validation_Y),
-      eval_metric        = metric,
-      batch_end_callback = self.batch_end_callback,
-      epoch_end_callback = EpochCallback(self),
+      eval_metric        = self._metrics,
+      batch_end_callback = self._batch_functions,
+      epoch_end_callback = self._epoch_functions,
       logger             = logger
     )
 
-    accuracy_filter.restore()
+    accuracy_filter._restore()
     test_data = mx.io.NDArrayIter(test_X, test_Y, batch_size=self._batch_size)
     test_accuracy= self._model.score(test_data)
     print 'test accuracy %f' % test_accuracy
