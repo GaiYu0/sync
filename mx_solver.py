@@ -91,7 +91,6 @@ class MXSolver():
   def __init__(self,
     batch_functions    = [],
     batch_size         = None,
-    data               = None,
     devices            = 'cpu',
     epochs             = None,
     epoch_functions    = [],
@@ -101,7 +100,6 @@ class MXSolver():
     setting_file       = None
   ):
     self._batch_size = batch_size
-    self._data = data
     if devices is 'cpu': self._devices = mx.cpu()
     else: self._devices = [mx.gpu(index) for index in devices]
     self._epochs = epochs
@@ -161,22 +159,23 @@ class MXSolver():
     self._progress['epoch'] = epoch
     
   def _update_settings(self, *args):
+    epoch = self._progress['epoch']
     settings = self._load_settings()
     if isinstance(self._lr_scheduler, MannualScheduler):
-      pass
-      # TODO
+      try:
+        lr = float(settings['lr'])
+        if self._lr_scheduler.lr != lr:
+          self.solver.scheduler.lr = lr
+          print 'epoch %d learning rate set to %f' % (epoch, lr)
+      except: pass
 
-      '''
-      for key, value in settings.items():
-        if key == 'lr':
-          lr = float(settings['lr'])
-          if self.solver.scheduler.lr != lr:
-            self.solver.scheduler.lr = lr
-            print 'epoch {:<3} learning rate {}'.format(epoch, lr)
-      '''
-
+  def export_parameters(self):
+    return \
+      {key : value.asnumpy() for key, value in self._model.arg_params.items()}, \ 
+      {key : value.asnumpy() for key, value in self._model.aux_params.items()}
+    
   # TODO data as an argument of train
-  def train(self):
+  def train(self, data):
     self._progress = {
       'epoch'               : 0,
       'training_loss'       : [],
@@ -185,16 +184,16 @@ class MXSolver():
       'validation_accuracy' : [0]
     }
 
+    from mxnet.metric import Accuracy, CompositeEvalMetric, CrossEntropy
+    self._metrics = CompositeEvalMetric(metrics=[Accuracy(), CrossEntropy()])
+
+    training_X, training_Y, validation_X, validation_Y, test_X, test_Y = data
+
     logger = logging.getLogger()
     accuracy_filter = AccuracyFilter(self)
     logger.addFilter(accuracy_filter)
     logger.addFilter(LearningRateFilter())
     logger.addFilter(TimeFilter(self))
-
-    from mxnet.metric import Accuracy, CompositeEvalMetric, CrossEntropy
-    self._metrics = CompositeEvalMetric(metrics=[Accuracy(), CrossEntropy()])
-
-    training_X, training_Y, validation_X, validation_Y, test_X, test_Y = self._data
 
     self._model.fit(
       X                  = training_X,
