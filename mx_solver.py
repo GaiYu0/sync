@@ -40,14 +40,14 @@ class AccuracyFilter(logging.Filter):
       result = float(message.split('=')[-1])
       if 'cross-entropy' in message:
         self._solver._progress['validation_loss'].append(result)
-        print 'epoch %d validation loss: %f' % (epoch, result)
+        if self._solver._verbose: print 'epoch %d validation loss: %f' % (epoch, result)
       elif 'accuracy' in message:
         table = self._solver._progress['validation_accuracy']
         table.append(result)
-        print 'epoch %d validation accuracy: %f' % (epoch, result)
+        if self._solver._verbose: print 'epoch %d validation accuracy: %f' % (epoch, result)
         if result > max(table[:-1]):
           self._store()
-          print 'epoch %d parameters stored' % epoch
+          if self._solver._verbose: print 'epoch %d parameters stored' % epoch
       else: raise Exception('unrecognized message: %s' % message)
       return False
     else: return True
@@ -60,17 +60,33 @@ class BlockFilter(logging.Filter):
     'Resetting Data Iterator', \
     'Running performance tests', \
     'Start training with'
+# _excerpts = ''
 
   def filter(self, record):
     message = record.getMessage()
     return all(excerpt not in message for excerpt in BlockFilter._excerpts)
 
-class LearningRateFilter(logging.Filter):
+class EpochFilter(logging.Filter):
+  def __init__(self, solver):
+    self._solver = solver
   def filter(self, record):
     message = record.getMessage()
+    if 'Epoch' in message:
+      start = len('Epoch[')
+      end = message.find(']')
+      self._solver._progress['epoch'] = int(message[start : end])
+    return True
+
+class LearningRateFilter(logging.Filter):
+  def __init__(self, solver):
+    self._solver = solver
+  def filter(self, record):
+    # TODO epoch formatting as solver's method
+    message = record.getMessage()
     if 'learning rate' in message:
+      epoch = self._solver._progress['epoch']
       lr = float(message.split(' ')[-1])
-      # TODO
+      if self._solver._verbose: print 'epoch %d learning rate set to %f' % (epoch, lr)
       return False
     else: return True
 
@@ -82,7 +98,7 @@ class TimeFilter(logging.Filter):
     if 'Time' in message:
       epoch = self._solver._progress['epoch']
       time = float(message.split('=')[-1])
-      print 'epoch %d time: %f seconds' % (epoch, time)
+      if self._solver._verbose: print 'epoch %d time: %f seconds' % (epoch, time)
       return False
     else: return True
 
@@ -94,16 +110,18 @@ class MXSolver():
     devices            = 'cpu',
     epochs             = None,
     epoch_functions    = [],
-    symbol             = None,
     initializer        = None,
     optimizer_settings = None,
-    setting_file       = None
+    symbol             = None,
+    setting_file       = None,
+    verbose            = False
   ):
     self._batch_size = batch_size
     if devices is 'cpu': self._devices = mx.cpu()
     else: self._devices = [mx.gpu(index) for index in devices]
     self._epochs = epochs
     self._file = setting_file
+    self._verbose = verbose
 
     self._batch_functions = []
     if isinstance(batch_functions, list): self._batch_functions.extend(batch_functions)
@@ -112,7 +130,6 @@ class MXSolver():
     self._epoch_functions = [
       self._training_statistics,
       self._update_settings,
-      self._update_progress
     ]
     if isinstance(epoch_functions, list): self._epoch_functions.extend(epoch_functions)
     elif callable(epoch_functions): self._epoch_functions.append(epoch_functions)
@@ -129,13 +146,15 @@ class MXSolver():
     logging.basicConfig(level=logging.NOTSET)
     logger = logging.getLogger()
     logger.addFilter(BlockFilter())
+    logger.addFilter(EpochFilter(self))
 
     self._model = mx.model.FeedForward(
-      ctx         = self._devices,
-      initializer = initializer,
-      num_epoch   = self._epochs,
-      optimizer   = optimizer,
-      symbol      = symbol
+      ctx              = self._devices,
+      initializer      = initializer,
+      num_epoch        = self._epochs,
+      numpy_batch_size = self._batch_size,
+      optimizer        = optimizer,
+      symbol           = symbol
     )
 
   def _training_statistics(self, *args):
@@ -143,8 +162,9 @@ class MXSolver():
     self._progress['training_loss'].append(results['cross-entropy'])
     self._progress['training_accuracy'].append(results['accuracy'])
     epoch = self._progress['epoch']
-    print 'epoch %d training loss %f' % (epoch, results['cross-entropy'])
-    print 'epoch %d training accuracy %f' % (epoch, results['accuracy'])
+    if self._verbose:
+      print 'epoch %d training loss: %f' % (epoch, results['cross-entropy'])
+      print 'epoch %d training accuracy: %f' % (epoch, results['accuracy'])
 
   def _load_settings(self):
     if self._file is None:
@@ -155,10 +175,8 @@ class MXSolver():
     settings = dict([setting.split('=') for setting in settings])
     return settings
 
-  def _update_progress(self, epoch, *args):
-    self._progress['epoch'] = epoch
-    
   def _update_settings(self, *args):
+    # TODO merge to MannualScheduler
     epoch = self._progress['epoch']
     settings = self._load_settings()
     if isinstance(self._lr_scheduler, MannualScheduler):
@@ -166,12 +184,13 @@ class MXSolver():
         lr = float(settings['lr'])
         if self._lr_scheduler.lr != lr:
           self.solver.scheduler.lr = lr
-          print 'epoch %d learning rate set to %f' % (epoch, lr)
+          if self._verbose:
+            print 'epoch %d learning rate set to %f' % (epoch, lr)
       except: pass
 
   def export_parameters(self):
     return \
-      {key : value.asnumpy() for key, value in self._model.arg_params.items()}, \ 
+      {key : value.asnumpy() for key, value in self._model.arg_params.items()}, \
       {key : value.asnumpy() for key, value in self._model.aux_params.items()}
     
   # TODO data as an argument of train
@@ -192,7 +211,7 @@ class MXSolver():
     logger = logging.getLogger()
     accuracy_filter = AccuracyFilter(self)
     logger.addFilter(accuracy_filter)
-    logger.addFilter(LearningRateFilter())
+    logger.addFilter(LearningRateFilter(self))
     logger.addFilter(TimeFilter(self))
 
     self._model.fit(
