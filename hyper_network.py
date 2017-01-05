@@ -1,5 +1,5 @@
 import mxnet as mx
-from MXLayers import *
+from mx_layers import *
 
 def generated_convolution_weight(*args):
   # implementing the method proposed in "HyperNetworks"
@@ -7,7 +7,7 @@ def generated_convolution_weight(*args):
 
 class _generated_convolution_weight:
   _n = 0
-  @static_method
+  @staticmethod
   def _(N_z, d, filter_in, filter_out, width, height):
     # TODO layer name
     n = generated_convolution_weight._n

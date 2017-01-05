@@ -1,8 +1,9 @@
 import mxnet as mx
-from MXLayers import *
+from mx_layers import *
 from hyper_network import generated_convolution_weight
 
 def _normalized_convolution(X, kernel_shape, n_kernels, stride, pad, weight=None, bias=None):
+  # TODO BN settings
   network = convolution(X, kernel_shape, n_kernels, stride, pad, weight=weight, bias=bias)
   network = batch_normalization(network)
   network = ReLU(network)
@@ -45,8 +46,8 @@ def triple_state_residual_network(n, mode):
   else: weight = generated_convolution_weight(N_z, d, FILTER_IN, FILTER_OUT, WIDTH, HEIGHT)
   for i in range(n - 1): network = _recur(network, 64, weight=weight)
 
-  network = pooling(network, (8, 8), (1, 1))
+  network = pooling(network, 'average', (8, 8), (1, 1))
   network = flatten(network)
   network = fully_connected(network, 10)
-  network = softmax(network)
+  network = softmax_loss(network)
   return network
